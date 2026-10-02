@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>批量裁剪工具</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body {
+    font-family:-apple-system,"PingFang SC",sans-serif;
+    background:#0d0d12; color:#eee; min-height:100vh;
+    display:flex; flex-direction:column; align-items:center; padding:12px; gap:10px;
+  }
+  h1 { font-size:17px; font-weight:600; margin-top:6px; }
+  .row { width:100%; max-width:560px; display:flex; align-items:center; gap:8px; }
+  .row label { font-size:13px; color:#aaa; flex:0 0 auto; }
+  input[type=number] {
+    width:70px; padding:8px; border-radius:8px; border:1px solid #333;
+    background:#1c1c24; color:#fff; font-size:15px; text-align:center;
+  }
+  button {
+    border:none; border-radius:10px; background:#2a2a33; color:#fff;
+    font-size:15px; font-weight:600; cursor:pointer; padding:10px 8px;
+  }
+  .btn { flex:1; }
+  #pick { width:100%; max-width:560px; padding:14px; border-radius:12px; background:#2b6cf5; font-size:16px; }
+  #applyFrame { padding:8px 14px; flex:0 0 auto; }
+  #progress { font-size:13px; color:#8ab4ff; }
+  #viewport {
+    position:relative; width:100%; max-width:560px; aspect-ratio:480/272;
+    overflow:hidden; background:#222; border-radius:10px;
+    touch-action:none; user-select:none; -webkit-user-select:none; box-shadow:0 0 0 1px #333;
+  }
+  #viewport canvas { position:absolute; top:0; left:0; transform-origin:0 0; pointer-events:none; }
+  #hint { font-size:12px; color:#888; }
+  .ctl { width:100%; max-width:560px; display:flex; align-items:center; gap:8px; }
+  .ctl button { width:44px; height:44px; flex:0 0 auto; font-size:20px; padding:0; }
+  .ctl input[type=range] { flex:1; accent-color:#2b6cf5; }
+  .ctl span { font-size:12px; color:#aaa; flex:0 0 auto; }
+  #saveAll { background:#22a45d; }
+  #next { background:#b8860b; }
+  #toast {
+    position:fixed; left:50%; bottom:40px; transform:translateX(-50%);
+    background:#333; color:#fff; padding:10px 18px; border-radius:20px; font-size:14px;
+    opacity:0; transition:opacity .3s; pointer-events:none; max-width:80vw; text-align:center;
+  }
+</style>
+</head>
+<body>
+  <h1>批量裁剪工具</h1>
+
+  <div class="row">
+    <label>取景框</label>
+    <input type="number" id="fw" value="480">
+    <span style="color:#aaa">×</span>
+    <input type="number" id="fh" value="272">
+    <button id="applyFrame">应用</button>
+  </div>
+
+  <button id="pick">📷 选择图片（可多选）</button>
+  <input type="file" id="file" accept="image/*" multiple style="display:none">
+  <div id="progress">未选择图片</div>
+
+  <div id="viewport"><canvas id="cv"></canvas></div>
+  <div id="hint">单指拖动 · 双指缩放 · 下方滑杆微调角度</div>
+
+  <div class="ctl">
+    <button id="zout">－</button>
+    <input type="range" id="zoom" min="100" max="800" value="100">
+    <button id="zin">＋</button>
+  </div>
+  <div class="ctl">
+    <span>旋转</span>
+    <input type="range" id="rot" min="0" max="359" value="0">
+    <span id="rotVal">0°</span>
+  </div>
+
+  <div class="row">
+    <button class="btn" id="fill">⛶ 铺满</button>
+    <button class="btn" id="resetView">重置位置</button>
+  </div>
+  <div class="row">
+    <button class="btn" id="prev">◀ 上一张</button>
+    <button class="btn" id="next">下一张 ▶</button>
+  </div>
+  <div class="row">
+    <button class="btn" id="saveAll">✓ 一键导出</button>
+  </div>
+  <div id="toast"></div>
+
+<script>
+const viewport = document.getElementById('viewport');
+const cv = document.getElementById('cv');
+const fileInput = document.getElementById('file');
+const zoomSlider = document.getElementById('zoom');
+const rotSlider = document.getElementById('rot');
+const rotVal = document.getElementById('rotVal');
+const progressEl = document.getElementById('progress');
+const toast = document.getElementById('toast');
+
+const MAX_SIDE = 1600;   // 载入时降采样，省内存提速度，对 480x272 输出绰绰有余
+
+let FW = 480, FH = 272;  // 取景框尺寸（可改）
+let W = 0, H = 0;        // 视口 css 尺寸
+let nw = 0, nh = 0;      // 当前图源尺寸
+let base = 1;            // 刚好铺满的缩放
+let scale = 1, tx = 0, ty = 0;
+
+let items = [];          // 选中的所有文件
+let results = [];        // 每张的导出 blob，按下一张时写入
+let idx = -1;            // 当前编辑第几张
+
+function showToast(msg){
+  toast.textContent = msg;
+  toast.style.opacity = 1;
+  setTimeout(()=>toast.style.opacity = 0, 2200);
+}
+
+/* ---------- 载入与视图 ---------- */
+function loadFile(file){
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    const s = Math.min(1, MAX_SIDE / Math.max(im.naturalWidth, im.naturalHeight));
+    nw = Math.round(im.naturalWidth * s);
+    nh = Math.round(im.naturalHeight * s);
+    cv.width = nw; cv.height = nh;
+    cv.getContext('2d').drawImage(im, 0, 0, nw, nh);
+    URL.revokeObjectURL(url);
+    rotSlider.value = 0; rotVal.textContent = '0°';
+    resetView();
+  };
+  im.src = url;
+}
+
+function resetView(){
+  const r = viewport.getBoundingClientRect();
+  W = r.width; H = r.height;
+  base = Math.max(W/nw, H/nh);
+  scale = base;
+  tx = (W - nw*scale)/2;
+  ty = (H - nh*scale)/2;
+  apply();
+}
+
+function clamp(){
+  const w = nw*scale, h = nh*scale;
+  tx = Math.min(0, Math.max(W - w, tx));
+  ty = Math.min(0, Math.max(H - h, ty));
+}
+
+function apply(){
+  base = Math.max(W/nw, H/nh);
+  if(scale < base) scale = base;
+  clamp();
+  cv.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
+  zoomSlider.value = Math.round(scale/base*100);
+}
+
+function zoomAt(cx, cy, factor){
+  if(factor < 1 && scale*factor < base) factor = base/scale;
+  tx = cx - (cx - tx)*factor;
+  ty = cy - (cy - ty)*factor;
+  scale *= factor;
+  apply();
+}
+
+/* ---------- 旋转（任意角度，滑条） ---------- */
+function rotateBy(deg){
+  if(idx < 0) return;
+  const rad = deg*Math.PI/180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const w = Math.max(1, Math.ceil(Math.abs(nw*cos)+Math.abs(nh*sin)));
+  const h = Math.max(1, Math.ceil(Math.abs(nw*sin)+Math.abs(nh*cos)));
+  const tmp = document.createElement('canvas');
+  tmp.width = nw; tmp.height = nh;
+  tmp.getContext('2d').drawImage(cv, 0, 0);
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.translate(w/2, h/2);
+  ctx.rotate(rad);
+  ctx.drawImage(tmp, -nw/2, -nh/2);
+  nw = w; nh = h;
+  apply();
+}
+
+/* ---------- 铺满：中心点不动，放大到刚好无空白 ---------- */
+function fillFrame(){
+  if(idx < 0) return;
+  const ccx = (W/2 - tx)/scale, ccy = (H/2 - ty)/scale;
+  scale = Math.max(W/nw, H/nh);
+  tx = W/2 - scale*ccx;
+  ty = H/2 - scale*ccy;
+  apply();
+  showToast('已铺满取景框');
+}
+
+/* ---------- 裁剪 ---------- */
+function cropCurrent(){
+  const c = document.createElement('canvas');
+  c.width = FW; c.height = FH;
+  const f = FW / W;
+  c.getContext('2d').drawImage(cv, tx*f, ty*f, nw*scale*f, nh*scale*f);
+  return c;
+}
+
+/* ---------- 批量流程 ---------- */
+function updateProgress(){
+  const saved = results.filter(Boolean).length;
+  progressEl.textContent = items.length
+    ? `第 ${idx+1}/${items.length} 张 · 已存 ${saved} 张${results[idx] ? '（本张已存）' : ''}`
+    : '未选择图片';
+}
+
+function goto(i){
+  idx = i;
+  loadFile(items[idx]);
+  updateProgress();
+}
+
+fileInput.onchange = () => {
+  if(!fileInput.files.length) return;
+  items = [...fileInput.files];
+  results = new Array(items.length).fill(null);
+  goto(0);
+  showToast(`已载入 ${items.length} 张，开始修第 1 张`);
+};
+
+document.getElementById('prev').onclick = () => {
+  if(idx > 0) goto(idx - 1);
+};
+document.getElementById('next').onclick = () => {
+  if(idx < 0) return;
+  cropCurrent().toBlob(b => {
+    results[idx] = b;
+    if(idx < items.length - 1){
+      goto(idx + 1);
+    } else {
+      updateProgress();
+      showToast('已是最后一张，点「一键导出」');
+    }
+  }, 'image/jpeg', 0.92);
+};
+
+document.getElementById('saveAll').onclick = () => {
+  const blobs = results.filter(Boolean);
+  if(!blobs.length){ showToast('还没有已完成的图片'); return; }
+  const files = blobs.map((b, i) => {
+    const srcName = items[results.indexOf(b)].name.replace(/\.[^.]+$/, '');
+    return new File([b], `${srcName}_${FW}x${FH}.jpg`, {type:'image/jpeg'});
+  });
+  if(navigator.canShare && navigator.canShare({files})){
+    navigator.share({files}).then(()=>showToast(`已分享 ${files.length} 张`))
+      .catch(e => { if(e.name !== 'AbortError') showToast('分享取消'); });
+  } else {
+    blobs.forEach((b, i) => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(b);
+      a.download = files[i].name;
+      a.click();
+    });
+    showToast(`已下载 ${blobs.length} 张`);
+  }
+};
+
+/* ---------- 控件 ---------- */
+document.getElementById('pick').onclick = () => fileInput.click();
+zoomSlider.oninput = () => { if(idx>=0){ scale = base*zoomSlider.value/100; apply(); } };
+document.getElementById('zin').onclick = () => zoomAt(W/2, H/2, 1.25);
+document.getElementById('zout').onclick = () => zoomAt(W/2, H/2, 0.8);
+rotSlider.oninput = () => {
+  if(idx < 0) return;
+  const old = parseInt(rotSlider.dataset.v || '0', 10);
+  const now = parseInt(rotSlider.value, 10);
+  rotSlider.dataset.v = now;
+  rotVal.textContent = now + '°';
+  rotateBy(now - old);
+};
+document.getElementById('fill').onclick = fillFrame;
+document.getElementById('resetView').onclick = () => { if(idx>=0) resetView(); };
+document.getElementById('applyFrame').onclick = () => {
+  const w = parseInt(document.getElementById('fw').value, 10);
+  const h = parseInt(document.getElementById('fh').value, 10);
+  if(w >= 16 && h >= 16 && w <= 4096 && h <= 4096){
+    FW = w; FH = h;
+    viewport.style.aspectRatio = FW + '/' + FH;
+    if(idx >= 0) resetView();
+    showToast(`取景框已设为 ${FW}×${FH}`);
+  } else showToast('数值需在 16~4096 之间');
+};
+
+/* ---------- 触摸 ---------- */
+let touches = new Map(), lastDist = 0, mid = null;
+
+viewport.addEventListener('touchstart', e => {
+  e.preventDefault();
+  for(const t of e.changedTouches) touches.set(t.identifier, {x:t.clientX, y:t.clientY});
+  if(touches.size === 2){
+    const [a,b] = [...touches.values()];
+    lastDist = Math.hypot(a.x-b.x, a.y-b.y);
+    const r = viewport.getBoundingClientRect();
+    mid = {x:(a.x+b.x)/2 - r.left, y:(a.y+b.y)/2 - r.top};
+  }
+}, {passive:false});
+
+viewport.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if(idx < 0) return;
+  const rect = viewport.getBoundingClientRect();
+  if(touches.size === 2 && e.touches.length === 2){
+    for(const t of e.changedTouches) touches.set(t.identifier, {x:t.clientX, y:t.clientY});
+    const [a,b] = [...touches.values()];
+    const d = Math.hypot(a.x-b.x, a.y-b.y);
+    const m = {x:(a.x+b.x)/2 - rect.left, y:(a.y+b.y)/2 - rect.top};
+    const factor = d/lastDist;
+    tx = m.x - (mid.x - tx)*factor;
+    ty = m.y - (mid.y - ty)*factor;
+    scale *= factor;
+    lastDist = d; mid = m;
+    apply();
+  } else if(e.touches.length === 1){
+    const t = e.touches[0];
+    const prev = touches.get(t.identifier);
+    if(prev){
+      tx += t.clientX - prev.x;
+      ty += t.clientY - prev.y;
+      touches.set(t.identifier, {x:t.clientX, y:t.clientY});
+      apply();
+    }
+  }
+}, {passive:false});
+
+const endTouch = e => { for(const t of e.changedTouches) touches.delete(t.identifier); };
+viewport.addEventListener('touchend', endTouch);
+viewport.addEventListener('touchcancel', endTouch);
+
+/* ---------- 鼠标（备用） ---------- */
+let dragging = false, last = null;
+viewport.addEventListener('mousedown', e => { dragging = true; last = {x:e.clientX, y:e.clientY}; });
+window.addEventListener('mousemove', e => {
+  if(!dragging || idx < 0) return;
+  tx += e.clientX - last.x; ty += e.clientY - last.y;
+  last = {x:e.clientX, y:e.clientY}; apply();
+});
+window.addEventListener('mouseup', () => dragging = false);
+viewport.addEventListener('wheel', e => {
+  e.preventDefault();
+  if(idx < 0) return;
+  const r = viewport.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.1 : 0.9);
+}, {passive:false});
+
+window.addEventListener('resize', () => { if(idx >= 0) resetView(); });
+</script>
+</body>
+</html>
