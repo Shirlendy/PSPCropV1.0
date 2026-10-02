@@ -8,7 +8,11 @@
   * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body {
     font-family:-apple-system,"PingFang SC",sans-serif;
-    background:#0d0d12; color:#eee; min-height:100vh;
+    background-color:#0d0d12; color:#eee; min-height:100vh;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px);
+    background-size:26px 26px;
     display:flex; flex-direction:column; align-items:center; padding:12px; gap:10px;
   }
   h1 { font-size:17px; font-weight:600; margin-top:6px; }
@@ -65,11 +69,6 @@
   <div id="hint">单指拖动 · 双指缩放 · 下方滑杆微调角度</div>
 
   <div class="ctl">
-    <button id="zout">－</button>
-    <input type="range" id="zoom" min="100" max="800" value="100">
-    <button id="zin">＋</button>
-  </div>
-  <div class="ctl">
     <span>旋转</span>
     <input type="range" id="rot" min="0" max="359" value="0">
     <span id="rotVal">0°</span>
@@ -92,7 +91,6 @@
 const viewport = document.getElementById('viewport');
 const cv = document.getElementById('cv');
 const fileInput = document.getElementById('file');
-const zoomSlider = document.getElementById('zoom');
 const rotSlider = document.getElementById('rot');
 const rotVal = document.getElementById('rotVal');
 const progressEl = document.getElementById('progress');
@@ -154,7 +152,6 @@ function apply(){
   if(scale < base) scale = base;
   clamp();
   cv.style.transform = `translate(${tx}px,${ty}px) scale(${scale})`;
-  zoomSlider.value = Math.round(scale/base*100);
 }
 
 function zoomAt(cx, cy, factor){
@@ -270,9 +267,6 @@ document.getElementById('saveAll').onclick = () => {
 
 /* ---------- 控件 ---------- */
 document.getElementById('pick').onclick = () => fileInput.click();
-zoomSlider.oninput = () => { if(idx>=0){ scale = base*zoomSlider.value/100; apply(); } };
-document.getElementById('zin').onclick = () => zoomAt(W/2, H/2, 1.25);
-document.getElementById('zout').onclick = () => zoomAt(W/2, H/2, 0.8);
 rotSlider.oninput = () => {
   if(idx < 0) return;
   const old = parseInt(rotSlider.dataset.v || '0', 10);
