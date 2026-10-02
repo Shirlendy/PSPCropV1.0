@@ -127,7 +127,7 @@ function loadFile(file){
     cv.width = nw; cv.height = nh;
     cv.getContext('2d').drawImage(im, 0, 0, nw, nh);
     URL.revokeObjectURL(url);
-    rotSlider.value = 0; rotVal.textContent = '0°';
+    rotSlider.value = 0; rotSlider.dataset.v = '0'; rotVal.textContent = '0°';
     resetView();
   };
   im.src = url;
@@ -168,7 +168,10 @@ function zoomAt(cx, cy, factor){
 /* ---------- 旋转（任意角度，滑条） ---------- */
 function rotateBy(deg){
   if(idx < 0) return;
-  const rad = deg*Math.PI/180, cos = Math.cos(rad), sin = Math.sin(rad);
+  const rad = deg*Math.PI/180;
+  let cos = Math.cos(rad), sin = Math.sin(rad);
+  if(Math.abs(cos) < 1e-10) cos = 0;
+  if(Math.abs(sin) < 1e-10) sin = 0;
   const w = Math.max(1, Math.ceil(Math.abs(nw*cos)+Math.abs(nh*sin)));
   const h = Math.max(1, Math.ceil(Math.abs(nw*sin)+Math.abs(nh*cos)));
   const tmp = document.createElement('canvas');
@@ -209,6 +212,8 @@ function updateProgress(){
   progressEl.textContent = items.length
     ? `第 ${idx+1}/${items.length} 张 · 已存 ${saved} 张${results[idx] ? '（本张已存）' : ''}`
     : '未选择图片';
+  const nb = document.getElementById('next');
+  nb.textContent = (items.length && idx === items.length - 1) ? '完成 ✓' : '下一张 ▶';
 }
 
 function goto(i){
@@ -223,6 +228,7 @@ fileInput.onchange = () => {
   results = new Array(items.length).fill(null);
   goto(0);
   showToast(`已载入 ${items.length} 张，开始修第 1 张`);
+  fileInput.value = '';
 };
 
 document.getElementById('prev').onclick = () => {
@@ -304,7 +310,7 @@ viewport.addEventListener('touchstart', e => {
 
 viewport.addEventListener('touchmove', e => {
   e.preventDefault();
-  if(idx < 0) return;
+  if(idx < 0 || !nw) return;
   const rect = viewport.getBoundingClientRect();
   if(touches.size === 2 && e.touches.length === 2){
     for(const t of e.changedTouches) touches.set(t.identifier, {x:t.clientX, y:t.clientY});
