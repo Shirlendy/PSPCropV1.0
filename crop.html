@@ -25,7 +25,21 @@
     font-size:15px; font-weight:600; cursor:pointer; padding:10px 8px;
   }
   .btn { flex:1; }
-  #pick { width:100%; max-width:560px; padding:14px; border-radius:12px; background:#2b6cf5; font-size:16px; }
+  #pick { width:100%; max-width:560px; padding:14px; border-radius:12px; background:#a8b8a4; color:#2f3a2c; font-size:16px; }
+  input[type=range] {
+    -webkit-appearance:none; appearance:none;
+    height:10px; border-radius:5px;
+    background:#7d8471;
+    box-shadow:inset 0 1px 4px rgba(0,0,0,.35);
+    outline:none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance:none; appearance:none;
+    width:28px; height:28px; border-radius:50%;
+    background:#f5f2ea;
+    border:2px solid #4a4e42;
+    box-shadow:0 2px 8px rgba(0,0,0,.45);
+  }
   #applyFrame { padding:8px 14px; flex:0 0 auto; }
   #progress { font-size:13px; color:#8ab4ff; }
   #viewport {
@@ -64,11 +78,11 @@
   <div id="progress">未选择图片</div>
 
   <div id="viewport"><canvas id="cv"></canvas></div>
-  <div id="hint">单指拖动 · 双指缩放 · 下方滑杆微调角度</div>
+  <div id="hint">单指拖动 · 双指缩放 · 滑条旋转（中间0°，左右各180°）</div>
 
   <div class="ctl">
     <span>旋转</span>
-    <input type="range" id="rot" min="0" max="359" value="0">
+    <input type="range" id="rot" min="0" max="360" value="180" step="1">
     <span id="rotVal">0°</span>
   </div>
 
@@ -102,6 +116,11 @@ let nw = 0, nh = 0;      // 当前图源尺寸
 let base = 1;            // 刚好铺满的缩放
 let scale = 1, tx = 0, ty = 0;
 
+let orig = null;         // 原始图（永不修改）
+let ow = 0, oh = 0;      // 原图尺寸
+let angle = 0;           // 当前旋转角 -180~+180
+let rotPending = false;  // 旋转限流标记
+
 let items = [];          // 选中的所有文件
 let results = [];        // 每张的导出 blob，按下一张时写入
 let idx = -1;            // 当前编辑第几张
@@ -118,18 +137,21 @@ function loadFile(file){
   const im = new Image();
   im.onload = () => {
     const s = Math.min(1, MAX_SIDE / Math.max(im.naturalWidth, im.naturalHeight));
-    nw = Math.round(im.naturalWidth * s);
-    nh = Math.round(im.naturalHeight * s);
-    cv.width = nw; cv.height = nh;
-    cv.getContext('2d').drawImage(im, 0, 0, nw, nh);
+    ow = Math.round(im.naturalWidth * s);
+    oh = Math.round(im.naturalHeight * s);
+    orig = document.createElement('canvas');
+    orig.width = ow; orig.height = oh;
+    orig.getContext('2d').drawImage(im, 0, 0, ow, oh);
     URL.revokeObjectURL(url);
-    rotSlider.value = 0; rotSlider.dataset.v = '0'; rotVal.textContent = '0°';
+    angle = 0;
+    rotSlider.value = 180; rotVal.textContent = '0°';
     resetView();
   };
   im.src = url;
 }
 
 function resetView(){
+  renderRotated();
   const r = viewport.getBoundingClientRect();
   W = r.width; H = r.height;
   base = Math.max(W/nw, H/nh);
@@ -160,28 +182,34 @@ function zoomAt(cx, cy, factor){
   apply();
 }
 
-/* ---------- 旋转（任意角度，滑条） ---------- */
-function rotateBy(deg){
-  if(idx < 0) return;
-  const rad = deg*Math.PI/180;
+/* ---------- 旋转：每次从原图按角度重绘，无累积误差，rAF限流防卡顿 ---------- */
+function renderRotated(){
+  const rad = angle*Math.PI/180;
   let cos = Math.cos(rad), sin = Math.sin(rad);
   if(Math.abs(cos) < 1e-10) cos = 0;
   if(Math.abs(sin) < 1e-10) sin = 0;
-  const w = Math.max(1, Math.ceil(Math.abs(nw*cos)+Math.abs(nh*sin)));
-  const h = Math.max(1, Math.ceil(Math.abs(nw*sin)+Math.abs(nh*cos)));
-  const tmp = document.createElement('canvas');
-  tmp.width = nw; tmp.height = nh;
-  tmp.getContext('2d').drawImage(cv, 0, 0);
+  const w = Math.max(1, Math.ceil(Math.abs(ow*cos)+Math.abs(oh*sin)));
+  const h = Math.max(1, Math.ceil(Math.abs(ow*sin)+Math.abs(oh*cos)));
   cv.width = w; cv.height = h;
   const ctx = cv.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
   ctx.translate(w/2, h/2);
   ctx.rotate(rad);
-  ctx.drawImage(tmp, -nw/2, -nh/2);
+  ctx.drawImage(orig, -ow/2, -oh/2);
   nw = w; nh = h;
-  // 关键修复：画面中心始终钉在取景框中心，旋转不再飞出框
-  tx = W/2 - scale*nw/2;
-  ty = H/2 - scale*nh/2;
-  apply();
+}
+
+function scheduleRotate(){
+  if(rotPending) return;
+  rotPending = true;
+  requestAnimationFrame(() => {
+    rotPending = false;
+    if(idx < 0 || !orig) return;
+    renderRotated();
+    tx = W/2 - scale*nw/2;
+    ty = H/2 - scale*nh/2;
+    apply();
+  });
 }
 
 /* ---------- 铺满：中心点不动，放大到刚好无空白 ---------- */
@@ -269,12 +297,10 @@ document.getElementById('saveAll').onclick = () => {
 /* ---------- 控件 ---------- */
 document.getElementById('pick').onclick = () => fileInput.click();
 rotSlider.oninput = () => {
-  if(idx < 0) return;
-  const old = parseInt(rotSlider.dataset.v || '0', 10);
-  const now = parseInt(rotSlider.value, 10);
-  rotSlider.dataset.v = now;
-  rotVal.textContent = now + '°';
-  rotateBy(now - old);
+  if(idx < 0 || !orig) return;
+  angle = parseInt(rotSlider.value, 10) - 180;
+  rotVal.textContent = (angle > 0 ? '+' : '') + angle + '°';
+  scheduleRotate();
 };
 document.getElementById('fill').onclick = fillFrame;
 document.getElementById('resetView').onclick = () => { if(idx>=0) resetView(); };
